@@ -10,23 +10,19 @@ const llm = new ChatOpenAI({
   temperature: 0,
 });
 
-/**
- * LangGraph v0.4 state via Annotations
- * - Use generics like Annotation<any>() (not Annotation.Any()).
- * - We keep types readable and tolerant for CI builds.
- */
+/** LangGraph v0.4 state via Annotations */
 const State = Annotation.Root({
-  // incoming payload: { query: string; session_id?: string }
-  input: Annotation<any>(),
+  // request payload
+  input: Annotation<any>(), // { query: string; session_id?: string }
 
-  // routing fields
+  // routing
   intent: Annotation<OrchestratorState["intent"] | undefined>(),
   topic: Annotation<string | undefined>(),
   city: Annotation<string | undefined>(),
   dateISO: Annotation<string | undefined>(),
   url: Annotation<string | undefined>(),
 
-  // outputs
+  // outputs (channels)
   headlines: Annotation<any | undefined>(),
   topicArticles: Annotation<any | undefined>(),
   summaries: Annotation<any[] | undefined>(),
@@ -74,30 +70,25 @@ async function doHeadlines(_: GraphState) {
   const resp = await tools.topHeadlines();
   return { headlines: resp.result?.articles, final: resp.result };
 }
-
 async function doTopic(state: GraphState) {
   if (!state.topic) return { followupQuestion: "Which topic?" };
   const resp = await tools.topicNews(state.topic, 10);
   return { topicArticles: resp.result?.articles, final: resp.result };
 }
-
 async function doHistory(state: GraphState) {
   const resp = await tools.onThisDay(state.dateISO);
   return { historyEvents: resp.result, final: resp.result };
 }
-
 async function doLocal(state: GraphState) {
   const resp = await tools.aroundYou(state.city, 8, state.input?.session_id);
   if (resp.result?.need_followup) return { followupQuestion: resp.result.question };
   return { final: resp.result };
 }
-
 async function doSummarize(state: GraphState) {
   if (!state.url) return { followupQuestion: "Please share the article link (URL)." };
   const resp = await tools.summarizeUrl(state.url);
   return { final: resp.result };
 }
-
 async function doBrief(state: GraphState) {
   if (!state.topic) return { followupQuestion: "Brief on which topic?" };
 
@@ -133,46 +124,47 @@ async function doBrief(state: GraphState) {
 export function buildGraph() {
   const g = new StateGraph(State);
 
-  g.addNode("router", router);
-  g.addNode("headlines", doHeadlines);
-  g.addNode("topic", doTopic);
-  g.addNode("history", doHistory);
-  g.addNode("local", doLocal);
-  g.addNode("summarize", doSummarize);
-  g.addNode("brief", doBrief);
+  // Use node IDs that are different from channel names
+  g.addNode("node_router", router);
+  g.addNode("node_headlines", doHeadlines);
+  g.addNode("node_topic", doTopic);
+  g.addNode("node_history", doHistory);
+  g.addNode("node_local", doLocal);
+  g.addNode("node_summarize", doSummarize);
+  g.addNode("node_brief", doBrief);
 
-  // Cast node IDs to 'any' to avoid strict generic constraints in v0.4
-  g.addEdge(START as any, "router" as any);
+  // Edges
+  g.addEdge(START as any, "node_router" as any);
 
   g.addConditionalEdges(
-    "router" as any,
+    "node_router" as any,
     (s: GraphState) => {
       switch (s.intent) {
-        case "HEADLINES": return "headlines";
-        case "TOPIC":     return "topic";
-        case "HISTORY":   return "history";
-        case "LOCAL":     return "local";
-        case "SUMMARIZE": return "summarize";
-        case "BRIEF":     return "brief";
-        default:          return "headlines";
+        case "HEADLINES": return "node_headlines";
+        case "TOPIC":     return "node_topic";
+        case "HISTORY":   return "node_history";
+        case "LOCAL":     return "node_local";
+        case "SUMMARIZE": return "node_summarize";
+        case "BRIEF":     return "node_brief";
+        default:          return "node_headlines";
       }
     },
     {
-      headlines: "headlines",
-      topic: "topic",
-      history: "history",
-      local: "local",
-      summarize: "summarize",
-      brief: "brief",
+      node_headlines: "node_headlines",
+      node_topic: "node_topic",
+      node_history: "node_history",
+      node_local: "node_local",
+      node_summarize: "node_summarize",
+      node_brief: "node_brief",
     } as any
   );
 
-  g.addEdge("headlines" as any, END as any);
-  g.addEdge("topic" as any, END as any);
-  g.addEdge("history" as any, END as any);
-  g.addEdge("local" as any, END as any);
-  g.addEdge("summarize" as any, END as any);
-  g.addEdge("brief" as any, END as any);
+  g.addEdge("node_headlines" as any, END as any);
+  g.addEdge("node_topic" as any, END as any);
+  g.addEdge("node_history" as any, END as any);
+  g.addEdge("node_local" as any, END as any);
+  g.addEdge("node_summarize" as any, END as any);
+  g.addEdge("node_brief" as any, END as any);
 
   return g.compile();
 }
