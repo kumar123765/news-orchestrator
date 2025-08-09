@@ -1,3 +1,4 @@
+// src/graph.ts
 import { START, END, StateGraph, Annotation } from "@langchain/langgraph";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
@@ -9,28 +10,35 @@ const llm = new ChatOpenAI({
   temperature: 0,
 });
 
-// ---- Define state with Annotations (v0.4)
+/**
+ * LangGraph v0.4 state via Annotations
+ * - Use generics like Annotation<any>() (not Annotation.Any()).
+ * - We keep types readable and tolerant for CI builds.
+ */
 const State = Annotation.Root({
-  input: Annotation.Any(), // { query, session_id }
+  // incoming payload: { query: string; session_id?: string }
+  input: Annotation<any>(),
+
+  // routing fields
   intent: Annotation<OrchestratorState["intent"] | undefined>(),
   topic: Annotation<string | undefined>(),
   city: Annotation<string | undefined>(),
   dateISO: Annotation<string | undefined>(),
   url: Annotation<string | undefined>(),
 
+  // outputs
   headlines: Annotation<any | undefined>(),
   topicArticles: Annotation<any | undefined>(),
   summaries: Annotation<any[] | undefined>(),
   brief: Annotation<string | undefined>(),
   historyEvents: Annotation<any | undefined>(),
-
   followupQuestion: Annotation<string | undefined>(),
   final: Annotation<any | undefined>(),
 });
 
 type GraphState = typeof State.State;
 
-// ---- Router: classify intent & extract slots
+/** Router: classify intent & extract slots */
 async function router(state: GraphState) {
   const schema = z.object({
     intent: z
@@ -61,7 +69,7 @@ async function router(state: GraphState) {
   };
 }
 
-// ---- Actions
+/** Actions */
 async function doHeadlines(_: GraphState) {
   const resp = await tools.topHeadlines();
   return { headlines: resp.result?.articles, final: resp.result };
@@ -92,6 +100,7 @@ async function doSummarize(state: GraphState) {
 
 async function doBrief(state: GraphState) {
   if (!state.topic) return { followupQuestion: "Brief on which topic?" };
+
   const news = await tools.topicNews(state.topic, 8);
   const arts = (news.result?.articles ?? []).slice(0, 3);
 
@@ -120,7 +129,7 @@ async function doBrief(state: GraphState) {
   };
 }
 
-// ---- Build graph
+/** Build & compile graph */
 export function buildGraph() {
   const g = new StateGraph(State);
 
@@ -132,27 +141,20 @@ export function buildGraph() {
   g.addNode("summarize", doSummarize);
   g.addNode("brief", doBrief);
 
-  // Casting node IDs to 'any' avoids overly-strict TS edge typings in v0.4
+  // Cast node IDs to 'any' to avoid strict generic constraints in v0.4
   g.addEdge(START as any, "router" as any);
 
   g.addConditionalEdges(
     "router" as any,
     (s: GraphState) => {
       switch (s.intent) {
-        case "HEADLINES":
-          return "headlines";
-        case "TOPIC":
-          return "topic";
-        case "HISTORY":
-          return "history";
-        case "LOCAL":
-          return "local";
-        case "SUMMARIZE":
-          return "summarize";
-        case "BRIEF":
-          return "brief";
-        default:
-          return "headlines";
+        case "HEADLINES": return "headlines";
+        case "TOPIC":     return "topic";
+        case "HISTORY":   return "history";
+        case "LOCAL":     return "local";
+        case "SUMMARIZE": return "summarize";
+        case "BRIEF":     return "brief";
+        default:          return "headlines";
       }
     },
     {
