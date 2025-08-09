@@ -1,8 +1,8 @@
+// src/server.ts
 import "dotenv/config";
 import express from "express";
 import bodyParser from "body-parser";
 import { buildGraph } from "./graph.js";
-import type { OrchestratorState } from "./state.js";
 
 const app = express();
 app.use(bodyParser.json());
@@ -13,7 +13,9 @@ app.post("/orchestrate", async (req, res) => {
     const { query, session_id } = req.body || {};
     if (!query) return res.status(400).json({ ok: false, error: "query is required" });
 
-    const result = await graph.invoke({ input: { query, session_id } } as OrchestratorState);
+    const result = await graph.invoke({
+      input: { query, session_id },
+    } as any); // loosen types to match compiled graph state
 
     if (result.followupQuestion) {
       return res.json({ ok: true, need_followup: true, question: result.followupQuestion });
