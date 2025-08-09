@@ -1,4 +1,3 @@
-// src/graph.ts
 import { START, END, StateGraph, Annotation } from "@langchain/langgraph";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
@@ -10,9 +9,9 @@ const llm = new ChatOpenAI({
   temperature: 0,
 });
 
-// --- Define state with Annotations (v0.4 style)
-const State = {
-  input: Annotation<any>(),
+// ---- Define state with Annotations (v0.4)
+const State = Annotation.Root({
+  input: Annotation.Any(), // { query, session_id }
   intent: Annotation<OrchestratorState["intent"] | undefined>(),
   topic: Annotation<string | undefined>(),
   city: Annotation<string | undefined>(),
@@ -27,12 +26,16 @@ const State = {
 
   followupQuestion: Annotation<string | undefined>(),
   final: Annotation<any | undefined>(),
-} as const;
+});
 
-// --- Router: classify intent & extract slots
-async function router(state: typeof State.$inferState) {
+type GraphState = typeof State.State;
+
+// ---- Router: classify intent & extract slots
+async function router(state: GraphState) {
   const schema = z.object({
-    intent: z.enum(["HEADLINES", "TOPIC", "BRIEF", "HISTORY", "LOCAL", "SUMMARIZE", "UNKNOWN"]).optional(),
+    intent: z
+      .enum(["HEADLINES", "TOPIC", "BRIEF", "HISTORY", "LOCAL", "SUMMARIZE", "UNKNOWN"])
+      .optional(),
     topic: z.string().optional(),
     city: z.string().optional(),
     dateISO: z.string().optional(),
@@ -58,36 +61,36 @@ async function router(state: typeof State.$inferState) {
   };
 }
 
-// --- Actions
-async function doHeadlines(_: typeof State.$inferState) {
+// ---- Actions
+async function doHeadlines(_: GraphState) {
   const resp = await tools.topHeadlines();
   return { headlines: resp.result?.articles, final: resp.result };
 }
 
-async function doTopic(state: typeof State.$inferState) {
+async function doTopic(state: GraphState) {
   if (!state.topic) return { followupQuestion: "Which topic?" };
   const resp = await tools.topicNews(state.topic, 10);
   return { topicArticles: resp.result?.articles, final: resp.result };
 }
 
-async function doHistory(state: typeof State.$inferState) {
+async function doHistory(state: GraphState) {
   const resp = await tools.onThisDay(state.dateISO);
   return { historyEvents: resp.result, final: resp.result };
 }
 
-async function doLocal(state: typeof State.$inferState) {
+async function doLocal(state: GraphState) {
   const resp = await tools.aroundYou(state.city, 8, state.input?.session_id);
   if (resp.result?.need_followup) return { followupQuestion: resp.result.question };
   return { final: resp.result };
 }
 
-async function doSummarize(state: typeof State.$inferState) {
+async function doSummarize(state: GraphState) {
   if (!state.url) return { followupQuestion: "Please share the article link (URL)." };
   const resp = await tools.summarizeUrl(state.url);
   return { final: resp.result };
 }
 
-async function doBrief(state: typeof State.$inferState) {
+async function doBrief(state: GraphState) {
   if (!state.topic) return { followupQuestion: "Brief on which topic?" };
   const news = await tools.topicNews(state.topic, 8);
   const arts = (news.result?.articles ?? []).slice(0, 3);
@@ -117,7 +120,7 @@ async function doBrief(state: typeof State.$inferState) {
   };
 }
 
-// --- Build graph
+// ---- Build graph
 export function buildGraph() {
   const g = new StateGraph(State);
 
@@ -129,11 +132,12 @@ export function buildGraph() {
   g.addNode("summarize", doSummarize);
   g.addNode("brief", doBrief);
 
-  g.addEdge(START, "router");
+  // Casting node IDs to 'any' avoids overly-strict TS edge typings in v0.4
+  g.addEdge(START as any, "router" as any);
 
   g.addConditionalEdges(
-    "router",
-    (s) => {
+    "router" as any,
+    (s: GraphState) => {
       switch (s.intent) {
         case "HEADLINES":
           return "headlines";
@@ -158,15 +162,15 @@ export function buildGraph() {
       local: "local",
       summarize: "summarize",
       brief: "brief",
-    }
+    } as any
   );
 
-  g.addEdge("headlines", END);
-  g.addEdge("topic", END);
-  g.addEdge("history", END);
-  g.addEdge("local", END);
-  g.addEdge("summarize", END);
-  g.addEdge("brief", END);
+  g.addEdge("headlines" as any, END as any);
+  g.addEdge("topic" as any, END as any);
+  g.addEdge("history" as any, END as any);
+  g.addEdge("local" as any, END as any);
+  g.addEdge("summarize" as any, END as any);
+  g.addEdge("brief" as any, END as any);
 
   return g.compile();
 }
