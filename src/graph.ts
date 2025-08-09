@@ -10,14 +10,9 @@ const llm = new ChatOpenAI({
   temperature: 0,
 });
 
-/**
- * LangGraph v0.4 state via Annotations
- * - Use Annotation<any>() generics
- * - Node IDs are prefixed with "node_" to avoid colliding with channel names
- */
 const State = Annotation.Root({
-  // request payload: { query: string; session_id?: string }
-  input: Annotation<any>(),
+  // request payload
+  input: Annotation<any>(), // { query: string; session_id?: string }
 
   // routing slots
   intent: Annotation<OrchestratorState["intent"] | undefined>(),
@@ -25,6 +20,7 @@ const State = Annotation.Root({
   city: Annotation<string | undefined>(),
   dateISO: Annotation<string | undefined>(),
   url: Annotation<string | undefined>(),
+  max: Annotation<number | undefined>(),
 
   // outputs
   headlines: Annotation<any | undefined>(),
@@ -38,28 +34,21 @@ const State = Annotation.Root({
 
 type GraphState = typeof State.State;
 
-/** Router: classify intent & extract slots (Structured Outputs requires required+nullable) */
+/** Router: Structured Outputs (required+nullable) + max extraction */
 async function router(state: GraphState) {
   const schema = z.object({
-    intent: z.enum([
-      "HEADLINES",
-      "TOPIC",
-      "BRIEF",
-      "HISTORY",
-      "LOCAL",
-      "SUMMARIZE",
-      "UNKNOWN",
-    ]),
+    intent: z.enum(["HEADLINES", "TOPIC", "BRIEF", "HISTORY", "LOCAL", "SUMMARIZE", "UNKNOWN"]),
     topic: z.string().nullable(),
     city: z.string().nullable(),
     dateISO: z.string().nullable(),
     url: z.string().nullable(),
+    max: z.number().nullable(),
   });
 
   const sys =
     "Classify the user's query for a news assistant (India-focused). " +
-    "Return JSON with keys: intent, topic, city, dateISO, url. " +
-    "intents: HEADLINES, TOPIC, BRIEF, HISTORY, LOCAL, SUMMARIZE, UNKNOWN.";
+    "Return JSON with keys: intent, topic, city, dateISO, url, max. " +
+    "If the user asks for N headlines/results (e.g., 'top 8 headlines', 'show 5 stories'), set max to that integer.";
 
   const prompt = [
     { role: "system", content: sys },
@@ -67,36 +56,39 @@ async function router(state: GraphState) {
   ];
 
   const out = await llm.withStructuredOutput(schema).invoke(prompt as any);
-
-  // Normalize null -> undefined for downstream
   return {
     intent: out.intent ?? "HEADLINES",
     topic: out.topic ?? undefined,
     city: out.city ?? undefined,
     dateISO: out.dateISO ?? undefined,
     url: out.url ?? undefined,
+    max: out.max ?? undefined,
   };
 }
 
 /** Actions */
-async function doHeadlines(_: GraphState) {
-  const resp = await tools.topHeadlines();
+async function doHeadlines(state: GraphState) {
+  const resp = await tools.topHeadlines({ max: state.max ?? undefined });
+  if (!resp.ok) return { final: { error: resp.error } };
   return { headlines: resp.result?.articles, final: resp.result };
 }
 
 async function doTopic(state: GraphState) {
   if (!state.topic) return { followupQuestion: "Which topic?" };
-  const resp = await tools.topicNews(state.topic, 10);
+  const resp = await tools.topicNews(state.topic, state.max ?? 10);
+  if (!resp.ok) return { final: { error: resp.error } };
   return { topicArticles: resp.result?.articles, final: resp.result };
 }
 
 async function doHistory(state: GraphState) {
   const resp = await tools.onThisDay(state.dateISO);
+  if (!resp.ok) return { final: { error: resp.error } };
   return { historyEvents: resp.result, final: resp.result };
 }
 
 async function doLocal(state: GraphState) {
-  const resp = await tools.aroundYou(state.city, 8, state.input?.session_id);
+  const resp = await tools.aroundYou(state.city, state.max ?? 8, state.input?.session_id);
+  if (!resp.ok) return { final: { error: resp.error } };
   if (resp.result?.need_followup) return { followupQuestion: resp.result.question };
   return { final: resp.result };
 }
@@ -104,22 +96,27 @@ async function doLocal(state: GraphState) {
 async function doSummarize(state: GraphState) {
   if (!state.url) return { followupQuestion: "Please share the article link (URL)." };
   const resp = await tools.summarizeUrl(state.url);
+  if (!resp.ok) return { final: { error: resp.error } };
   return { final: resp.result };
 }
 
 async function doBrief(state: GraphState) {
   if (!state.topic) return { followupQuestion: "Brief on which topic?" };
 
-  const news = await tools.topicNews(state.topic, 8);
+  const news = await tools.topicNews(state.topic, state.max ?? 8);
+  if (!news.ok) return { final: { error: news.error } };
+
   const arts = (news.result?.articles ?? []).slice(0, 3);
 
-  const summaries: { url: string; summary: string }[] = [];
-  for (const a of arts) {
-    const url = a?.url;
-    if (!url) continue;
-    const s = await tools.summarizeUrl(url);
-    summaries.push({ url, summary: s.result?.summary ?? "" });
-  }
+  // Parallelize summarization for speed
+  const summaries = await Promise.all(
+    arts.map(async (a: any) => {
+      if (!a?.url) return null;
+      const s = await tools.summarizeUrl(a.url);
+      if (!s.ok) return null;
+      return { url: a.url, summary: s.result?.summary ?? "" };
+    })
+  ).then((x) => x.filter(Boolean) as { url: string; summary: string }[]);
 
   const items = summaries.map((s) => `- ${s.summary}`).join("\n").slice(0, 15000);
   const synth = await llm.invoke([
@@ -147,7 +144,7 @@ async function doBrief(state: GraphState) {
 export function buildGraph() {
   const g = new StateGraph(State);
 
-  // Node IDs must be different from channel names
+  // node IDs (distinct from channel names)
   g.addNode("node_router", router);
   g.addNode("node_headlines", doHeadlines);
   g.addNode("node_topic", doTopic);
